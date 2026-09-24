@@ -201,7 +201,7 @@ jobs:
               echo "::warning::Android16/6.12 会跳过 legacy LZ4K/LZ4KD/LZ4K_OPLUS 补丁栈，仅保留内核原生支持的 ZRAM 算法。"
             fi
             if [ -n "$effective_zram_extra_algos" ]; then
-              filtered_algos="$(python3 -c 'import sys; blocked={\"lz4k\",\"lz4kd\",\"lz4k_oplus\"}; print(\",\".join(item.strip() for item in sys.argv[1].split(\",\") if item.strip() and item.strip().lower() not in blocked))' "$effective_zram_extra_algos")"
+              filtered_algos="$(python3 -c 'import sys; blocked={"lz4k","lz4kd","lz4k_oplus"}; print(",".join(item.strip() for item in sys.argv[1].split(",") if item.strip() and item.strip().lower() not in blocked))' "$effective_zram_extra_algos")"
               if [ "$filtered_algos" != "$effective_zram_extra_algos" ]; then
                 echo "::warning::Android16/6.12 不支持 legacy LZ4K/LZ4KD/LZ4K_OPLUS，已自动从自定义算法列表移除。"
               fi
