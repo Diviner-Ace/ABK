@@ -488,8 +488,8 @@ jobs:
           [[ "$SOURCE_COMMIT" =~ ^[0-9a-fA-F]{40}$ ]] || { echo "::error::源码 commit 必须是完整 SHA"; exit 1; }
           python3 - <<'PY'
           import os, re
-          if not re.fullmatch(r"\d{4}-(0[1-9]|1[0-2])", os.environ["SOURCE_PATCH_LEVEL"]):
-              raise SystemExit("os_patch_level must use YYYY-MM")
+          if not re.fullmatch(r"(?:\d{4}-(0[1-9]|1[0-2])|lts)", os.environ["SOURCE_PATCH_LEVEL"]):
+              raise SystemExit("os_patch_level must use YYYY-MM or lts")
           if os.environ["SOURCE_KERNEL_VERSION"] not in {"5.10", "5.15", "6.1", "6.6", "6.12"}:
               raise SystemExit("unsupported custom source kernel line")
           expected = {
@@ -742,6 +742,11 @@ jobs:
                 if [ -n "$CUSTOM_COMMIT" ]; then
                   echo "切换 SUSFS 到自定义提交: $CUSTOM_COMMIT"
                   cd susfs4ksu
+                  # 浅克隆 (--depth 1) 只含分支 HEAD，历史里较旧的固定提交不在其中，
+                  # 直接 checkout 会因 "reference is not a tree" 失败，先补全历史。
+                  git fetch --unshallow origin "$SUSFS_BRANCH" 2>/dev/null \
+                    || git fetch --depth=1000 origin "$SUSFS_BRANCH" 2>/dev/null \
+                    || true
                   git checkout "$CUSTOM_COMMIT"
                   cd ..
                 fi
@@ -1151,6 +1156,64 @@ jobs:
             git -C common config user.name "ABK Custom Source"
             git -C common config user.email "abk-custom-source@localhost"
 
+            clang_constants=common/build.config.constants
+            clang_common=common/build.config.common
+            clang_root=prebuilts/clang/host/linux-x86
+            pinned_name=""
+            pinned_ref=""
+            literal_ref=""
+            templated_root=""
+            if [ -f "$clang_constants" ]; then
+              pinned_name=$(
+                sed -n 's/^CLANG_VERSION=//p' "$clang_constants" | head -n1
+              )
+              pinned_name=${pinned_name#clang-}
+            fi
+            if [ -f "$clang_common" ]; then
+              pinned_ref=$(
+                sed -n 's/^CLANG_PREBUILT_BIN=//p' "$clang_common" | head -n1
+              )
+              pinned_ref=${pinned_ref%/bin}
+              if [ -n "$pinned_ref" ]; then
+                case "$pinned_ref" in
+                  *'${'*) templated_root=${pinned_ref%/clang-*} ;;
+                  *) literal_ref=$pinned_ref ;;
+                esac
+              fi
+            fi
+            align_clang() {
+              file=$1
+              target=$2
+              if [ -z "$target" ] || [ -d "$target" ]; then
+                return 0
+              fi
+              root=${target%/clang-*}
+              newest=$(
+                ls -d "$root"/clang-r* 2>/dev/null | sort -V | tail -n1 || true
+              )
+              if [ -z "$newest" ]; then
+                echo "::error::源码 pin 的 $target 缺失，$root 下无可用 clang"
+                exit 1
+              fi
+              echo "::warning::pin $target 缺失，改用 $newest"
+              if [ "$file" = "$clang_constants" ]; then
+                name=${newest##*/clang-}
+                sed_expr="s/^CLANG_VERSION=.*/CLANG_VERSION=$name/"
+                sed -i "$sed_expr" "$file"
+              else
+                sed_expr="s|^CLANG_PREBUILT_BIN=.*|"
+                sed_expr+="CLANG_PREBUILT_BIN=$newest/bin|"
+                sed -i "$sed_expr" "$file"
+              fi
+            }
+            if [ -n "$pinned_name" ]; then
+              align_clang "$clang_constants" \
+                "${templated_root:-$clang_root}/clang-$pinned_name"
+            fi
+            if [ -n "$literal_ref" ]; then
+              align_clang "$clang_common" "$literal_ref"
+            fi
+
             python3 "$GITHUB_WORKSPACE/.github/scripts/custom-source.py" inspect \
               --source-dir common \
               --source-url "$SOURCE_REPO" \
@@ -1329,7 +1392,9 @@ jobs:
           case "${{ inputs.ksu_variant }}" in
             "Official")
               echo "添加 KernelSU 官方版..."
-              curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -s $BRANCH
+              # KernelSU ref 由 .github/scripts/resolve-ksu-ref.sh 按发布层
+              # (Stable/Dev/Latest/Custom) 统一解析并写入 $BRANCH，这里直接使用。
+              curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -s "$BRANCH"
 
               cd KernelSU
               KSU_GIT_VERSION=$(git rev-list --count HEAD)
